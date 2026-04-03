@@ -1,0 +1,13 @@
+# Segreti e configurazioni locali
+.env
+
+# Ambiente virtuale (Python)
+.venv/
+env/
+venv/
+ENV/
+
+# File di sistema e cache
+__pycache__/
+*.py[cod]
+.DS_Store

@@ -1,0 +1,6 @@
+streamlit
+pandas
+requests
+altair
+google-generativeai
+python-dotenv
