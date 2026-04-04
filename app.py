@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-st.set_page_config(page_title="F1 Mission Control", page_icon="🏎️", layout="wide")
+st.set_page_config(page_title="F1 Mission Control", page_icon="🏎️", layout="wide", initial_sidebar_state="collapsed")
 
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
@@ -23,15 +23,37 @@ if GEMINI_API_KEY:
 
 @st.cache_data(ttl=3600)
 def get_sessions(year):
+    """Scarica le sessioni e le raggruppa per Gran Premio (Nazione)"""
     try:
         url = f"https://api.openf1.org/v1/sessions?year={year}"
         res = requests.get(url, timeout=5).json()
-        sessions = {}
+        
+        # SCUDO: Se l'API va offline o dà errore testuale, restituisci un fallback
+        if not isinstance(res, list):
+            return {"Offline - Riprova": {"Latest": "latest"}}
+
+        meetings = {}
         for s in res:
-            name = f"{s['country_name']} - {s['session_name']}"
-            sessions[name] = {"key": s['session_key'], "country": s['country_name']}
-        return sessions
-    except: return {"Latest": {"key": "latest", "country": "Unknown"}}
+            country = s.get('country_name', 'Sconosciuto')
+            s_name = s.get('session_name', 'Sconosciuta')
+            s_key = s.get('session_key', 'latest')
+            
+            # Crea il "cassetto" della nazione se non esiste
+            if country not in meetings:
+                meetings[country] = {}
+                
+            # Salva la sessione dentro la nazione
+            meetings[country][s_name] = s_key
+            
+        # Se la lista è completamente vuota
+        if not meetings:
+            return {"Nessun GP trovato": {"Latest": "latest"}}
+            
+        return meetings
+        
+    except Exception as e: 
+        print(f"Errore connessione sessioni: {e}")
+        return {"Offline - Riprova tra poco": {"Latest": "latest"}}
 
 @st.cache_data(ttl=300)
 def get_ergast_data(path):
@@ -74,10 +96,18 @@ def get_openf1_race_status(session_key):
         start_grid = {}
         end_grid = {}
         
+        # SCUDO: se l'API non restituisce una lista, interrompiamo per evitare il crash
+        if not isinstance(res, list):
+            return {}, {}
+        
         for p in res:
-            num = p['driver_number']
-            pos = p['position']
+            num = p.get('driver_number')
+            pos = p.get('position')
             
+            # Saltiamo i dati sporchi
+            if num is None or pos is None:
+                continue
+                
             # La primissima posizione registrata è la partenza
             if num not in start_grid:
                 start_grid[num] = pos
@@ -97,11 +127,14 @@ def get_live_positions(session_key):
         url = f"https://api.openf1.org/v1/position?session_key={session_key}"
         res = requests.get(url, timeout=10).json()
         
-        # L'API manda migliaia di punti cronologici. Noi sovrascriviamo il dizionario 
-        # man mano che li leggiamo, così ci rimane solo l'ultimissima posizione nota.
+        # SCUDO: se l'API risponde con un errore testuale, ci fermiamo
+        if not isinstance(res, list):
+            return {}
+        
         latest_positions = {}
         for p in res:
-            latest_positions[p['driver_number']] = p['position']
+            if 'driver_number' in p and 'position' in p:
+                latest_positions[p['driver_number']] = p['position']
             
         return latest_positions
     except Exception as e:
@@ -165,9 +198,14 @@ def get_team_radio(session_key, driver_num=None):
 
 st.markdown("""
     <style>
-    .main { background-color: #0b0d11; }
-    [data-testid="stSidebar"] { background-color: #161b22; }
-    .stMetric { background-color: #1d2129; padding: 10px; border-radius: 10px; }
+    /* Usiamo le variabili dinamiche di Streamlit per adattarci a Light/Dark Mode */
+    .stMetric { 
+        background-color: var(--secondary-background-color); 
+        color: var(--text-color); 
+        padding: 10px; 
+        border-radius: 10px; 
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -175,26 +213,50 @@ with st.sidebar:
     st.title("🏁 F1 Pro Terminal")
     st.markdown("---")
     
-    st.subheader("Impostazioni Globali")
-    selected_year = st.selectbox("Anno:", [2026, 2025, 2024, 2023], index=2)
-    sessions = get_sessions(selected_year)
+    st.subheader("⚙️ Impostazioni Gara")
+    selected_year = st.selectbox("📅 Stagione Mondiale:", [2026, 2025, 2024, 2023], index=0)
     
-    session_name = st.selectbox("Evento:", list(sessions.keys()))
-    curr_session_key = sessions[session_name]['key']
+    # Recupera le sessioni (ora divise per nazione!)
+    meetings = get_sessions(selected_year)
     
-    paesi_unici = []
-    for name, data in sessions.items():
-        if data['country'] not in paesi_unici:
-            paesi_unici.append(data['country'])
-    
-    try:
-        curr_round = paesi_unici.index(sessions[session_name]['country']) + 1
-    except:
+    if meetings:
+        # 1. MENU A TENDINA: Scelta della Nazione
+        countries = list(meetings.keys())
+        default_country_index = len(countries) - 1 if countries else 0
+        selected_country = st.selectbox("📍 Gran Premio:", countries, index=default_country_index)
+        
+        # Mostriamo visivamente il Round calcolando l'indice
+        curr_round = countries.index(selected_country) + 1
+        st.info(f"🏆 **Round {curr_round}** del {selected_year}")
+        
+        # 2. PULSANTIERA ORIZZONTALE: Scelta della Sessione (Sprint, Gara, ecc.)
+        sessions_in_country = meetings[selected_country]
+        session_names = list(sessions_in_country.keys())
+        default_session_index = len(session_names) - 1 if session_names else 0
+        
+        # MAGIC TRICK: horizontal=True mette i radio button in riga!
+        selected_session = st.radio("🏎️ Sessione:", session_names, index=default_session_index, horizontal=True)
+        
+        # Variabili che servono al resto dell'app
+        curr_session_key = sessions_in_country[selected_session]
+        session_name = f"{selected_country} - {selected_session}"
+    else:
+        st.warning("Nessun dato disponibile.")
+        curr_session_key = "latest"
+        session_name = "Sconosciuta"
         curr_round = 1
-
+    
     st.markdown("---")
-    page = st.radio("SISTEMI:", ["📡 Dashboard", "📈 Telemetria", "🏆 Classifiche", "🗺️ Mappa Circuito", "🎙️ Radio Box", "💬 Chiacchera col muretto"])
-
+    
+    st.subheader("🖥️ Moduli Terminale")
+    page = st.radio("Seleziona modulo:", [
+        "📡 Dashboard", 
+        "📈 Telemetria", 
+        "🏆 Classifiche", 
+        "🗺️ Mappa Circuito", 
+        "🎙️ Radio Box", 
+        "💬 Chiacchera col muretto"
+    ], label_visibility="collapsed")
 @st.cache_data(ttl=60)
 def get_weather(session_key):
     """Recupera l'ultimo bollettino meteo della sessione"""
@@ -227,7 +289,7 @@ if page == "📡 Dashboard":
             # CSS magico per spingere tutto a destra e creare un badge elegante
             st.markdown(f"""
             <div style='text-align: right; padding-top: 25px;'>
-                <span style='background:#1d2129; padding:10px 15px; border-radius:8px; font-size:14px; border-left: 3px solid #3498db; box-shadow: 0 2px 4px rgba(0,0,0,0.2);'>
+                <span style='background-color: var(--secondary-background-color); color: var(--text-color); padding:10px 15px; border-radius:8px; font-size:14px; border-left: 3px solid #3498db; box-shadow: 0 2px 4px rgba(0,0,0,0.2);'>
                     {rain_icon} &nbsp;|&nbsp; 🌡️ Aria: <b>{air_t}°C</b> &nbsp;|&nbsp; 🛣️ Pista: <b>{track_t}°C</b> &nbsp;|&nbsp; 💧 Umidità: <b>{hum}%</b>
                 </span>
             </div>
@@ -237,7 +299,13 @@ if page == "📡 Dashboard":
             
     st.markdown("---")
     
+    # 1. SCARICA I DATI DEI PILOTI
     drivers_dict = get_drivers(curr_session_key)
+    
+    # 2. CONTROLLO PROATTIVO E AUTOMATICO (Il nostro vanto!)
+    if not drivers_dict:
+        st.error("🚫 **DATI ASSENTI / SESSIONE ANNULLATA:** I transponder delle monoposto risultano spenti. Questo evento potrebbe essere stato cancellato dal calendario, non essere ancora iniziato, oppure i server FIA non hanno trasmesso la telemetria.")
+        
     start_grid, live_grid = get_openf1_race_status(curr_session_key)
     
     col1, col2 = st.columns(2)
@@ -251,7 +319,7 @@ if page == "📡 Dashboard":
             for d in starting_list:
                 pos = start_grid.get(d['number'], 'Pit')
                 st.markdown(f"""
-                <div style='padding:8px; border-left:4px solid {d['color']}; background:#1d2129; margin-bottom:5px; border-radius:3px;'>
+                <div style='padding:8px; border-left:4px solid {d['color']}; background-color: var(--secondary-background-color); color: var(--text-color); margin-bottom:5px; border-radius:3px;'>
                     <b>{pos}°</b> {d['full_name']} <span style='float:right;color:gray;font-size:12px;'>{d['team']}</span>
                 </div>
                 """, unsafe_allow_html=True)
@@ -267,7 +335,7 @@ if page == "📡 Dashboard":
             for d in arrival_list:
                 pos = live_grid.get(d['number'], 'RIT')
                 st.markdown(f"""
-                <div style='padding:8px; border-left:4px solid {d['color']}; background:#1d2129; margin-bottom:5px; border-radius:3px;'>
+                <div style='padding:8px; border-left:4px solid {d['color']}; background-color: var(--secondary-background-color); color: var(--text-color); margin-bottom:5px; border-radius:3px;'>
                     <b>{pos}°</b> {d['full_name']} <span style='float:right;color:gray;font-size:12px;'>#{d['number']}</span>
                 </div>
                 """, unsafe_allow_html=True)
