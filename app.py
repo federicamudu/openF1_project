@@ -4,6 +4,8 @@ import google.generativeai as genai
 import os
 import pandas as pd
 import altair as alt
+from streamlit_autorefresh import st_autorefresh
+from datetime import datetime
 from dotenv import load_dotenv
 
 # --- CONFIGURAZIONE ---
@@ -16,7 +18,7 @@ if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel(
         model_name='gemini-3-flash-preview',
-        system_instruction="Sei il Capo degli Ingegneri al muretto box di F1. Il tuo compito è analizzare la situazione in gara e rispondere al tuo pilota o al Team Principal in modo tecnico, freddo e iper-realistico. Argomenta le tue risposte creando discorsi fluidi e brevi paragrafi. NON USARE MAI ELENCHI PUNTATI O NUMERATI. Sei sotto pressione, il tempo stringe: vai dritto al punto, basandoti sempre sui dati live che ti vengono forniti nel contesto. Se ti viene chiesto di consigliare una strategia, considera sempre i seguenti fattori: 1) Posizione attuale in pista e gap con i rivali, 2) Condizioni meteo e loro evoluzione prevista, 3) Usura degli pneumatici e performance del treno di gomme attuale, 4) Eventuali Safety Car o VSC in pista, 5) Comportamento dei piloti rivali (ad esempio se stanno spingendo o gestendo). Sii conciso ma esaustivo, e fornisci sempre una raccomandazione chiara se richiesto."
+        system_instruction="Sei il Capo degli Ingegneri al muretto box di F1. Il tuo compito è analizzare la situazione in gara e rispondere al pilota o al Team Principal in modo tecnico, freddo e iper-realistico, usando il tipico gergo radiofonico (es. 'Copy', 'Box', 'Delta', 'Strat mode'). Argomenta le tue risposte creando discorsi fluidi e brevi paragrafi. È ASSOLUTAMENTE VIETATO USARE ELENCHI PUNTATI O NUMERATI. Sei sotto pressione: vai dritto al punto basandoti SOLO ED ESCLUSIVAMENTE sui dati live che ti vengono forniti nel contesto. Se ti vengono chiesti gap millimetrici o lo stato di usura delle gomme, e questi dati non sono presenti nel tuo contesto, NON INVENTARLI: comunica in modo realistico che sei in attesa di conferma dai sensori o dal server della telemetria. Sii conciso, spietato nell'analisi logica e fornisci sempre una raccomandazione chiara quando ti viene chiesta una strategia."
     )
 
 # --- FUNZIONI DATI (OpenF1 & Jolpica/Ergast) ---
@@ -194,6 +196,42 @@ def get_team_radio(session_key, driver_num=None):
         print(f"Errore Radio: {e}")
         return []
 
+@st.cache_data(ttl=60) 
+def format_time(seconds):
+    """Converte i secondi in formato F1 (Min:Sec.Millesimi)"""
+    if not seconds or pd.isna(seconds):
+        return "N/A"
+    
+    m = int(seconds // 60)
+    s = int(seconds % 60)
+    ms = int(round((seconds % 1) * 1000))
+    
+    if m > 0:
+        return f"{m}:{s:02d}.{ms:03d}"
+    return f"{s}.{ms:03d}"
+
+@st.cache_data(ttl=60)
+def get_stints(session_key):
+    """Scarica le strategie e le mescole utilizzate dai piloti"""
+    try:
+        url = f"https://api.openf1.org/v1/stints?session_key={session_key}"
+        res = requests.get(url, timeout=10).json()
+        return res if isinstance(res, list) else []
+    except Exception as e:
+        print(f"Errore Stints: {e}")
+        return []
+    
+@st.cache_data(ttl=60)
+def get_weather(session_key):
+    """Recupera l'ultimo bollettino meteo della sessione"""
+    try:
+        url = f"https://api.openf1.org/v1/weather?session_key={session_key}"
+        res = requests.get(url, timeout=5).json()
+        if isinstance(res, list) and len(res) > 0:
+            return res[-1] # Prendiamo l'ultima lettura, che è la più aggiornata
+        return None
+    except: return None
+
 # --- INTERFACCIA E SIDEBAR ---
 
 st.markdown("""
@@ -245,33 +283,28 @@ with st.sidebar:
         curr_session_key = "latest"
         session_name = "Sconosciuta"
         curr_round = 1
-    
-    st.markdown("---")
-    
-    st.subheader("🖥️ Moduli Terminale")
-    page = st.radio("Seleziona modulo:", [
+
+page = st.radio(
+    "Navigazione Terminale:", 
+    [
         "📡 Dashboard", 
         "📈 Telemetria", 
         "🏆 Classifiche", 
         "🗺️ Mappa Circuito", 
         "🎙️ Radio Box", 
         "💬 Chiacchera col muretto"
-    ], label_visibility="collapsed")
-@st.cache_data(ttl=60)
-def get_weather(session_key):
-    """Recupera l'ultimo bollettino meteo della sessione"""
-    try:
-        url = f"https://api.openf1.org/v1/weather?session_key={session_key}"
-        res = requests.get(url, timeout=5).json()
-        if isinstance(res, list) and len(res) > 0:
-            return res[-1] # Prendiamo l'ultima lettura, che è la più aggiornata
-        return None
-    except: return None
+    ], 
+    horizontal=True, 
+    label_visibility="collapsed"
+)
+st.markdown("---")
 
 # --- LOGICA DELLE PAGINE ---
 
 # 1. DASHBOARD IBRIDA (TUTTA IN OPENF1)
 if page == "📡 Dashboard":
+    if selected_year == datetime.now().year:
+        st_autorefresh(interval=30000, key="live_dashboard_updater")
     head_col1, head_col2 = st.columns([2, 1.5])
     
     with head_col1:
@@ -344,6 +377,40 @@ if page == "📡 Dashboard":
             st.caption("ℹ️ *Se la gara non è conclusa, queste sono le posizioni in tempo reale (Gara in corso).*")
         else:
             st.warning("🏎️ Gara non ancora iniziata o auto ferme ai box.")
+    st.markdown("---")
+    st.subheader("Strategia Pneumatici (Timeline)")
+    
+    stints_data = get_stints(curr_session_key)
+    
+    if stints_data and drivers_dict:
+        df_stints = pd.DataFrame(stints_data)
+        
+        # 1. FIX DEI NOMI: Creiamo un dizionario per associare il Numero all'Acronimo (es. 1 -> VER)
+        num_to_name = {info['number']: info['name_id'] for info in drivers_dict.values()}
+        df_stints['Pilota'] = df_stints['driver_number'].map(lambda x: num_to_name.get(x, str(x)))
+        
+        # Pulizia dati
+        df_stints = df_stints.dropna(subset=['lap_start', 'lap_end', 'compound'])
+        
+        if not df_stints.empty:
+            color_scale = alt.Scale(
+                domain=['SOFT', 'MEDIUM', 'HARD', 'INTERMEDIATE', 'WET', 'UNKNOWN'],
+                range=['#e74c3c', '#f1c40f', '#ecf0f1', '#2ecc71', '#3498db', '#95a5a6']
+            )
+            
+            # 2. FIX DESIGN: Usiamo size=6 per fare una riga sottile invece del blocco pesante
+            chart = alt.Chart(df_stints).mark_bar(size=6, cornerRadius=3).encode(
+                x=alt.X('lap_start:Q', title='Numero di Giro'),
+                x2='lap_end:Q',
+                # MAGIA QUI: labelOverlap=False ordina al grafico di NON nascondere i nomi!
+                y=alt.Y('Pilota:N', sort='-x', title='', axis=alt.Axis(labelOverlap=False)), 
+                color=alt.Color('compound:N', scale=color_scale, legend=alt.Legend(title="Mescola", orient="top", columns=3, labelLimit=0)),
+                tooltip=['Pilota', 'compound', 'lap_start', 'lap_end']
+            ).properties(height=600) # Alziamo un po' il grafico per fare spazio a tutti i 20 nomi
+            
+            st.altair_chart(chart, width="stretch")
+        else:
+            st.info("I dati sulle mescole non sono ancora stati elaborati dai sensori.")
             
 elif page == "📈 Telemetria":
     st.header(f"Telemetria: {session_name}")
@@ -358,47 +425,107 @@ elif page == "📈 Telemetria":
         laps = get_laps(driver_num, curr_session_key)
         
         if laps:
-            lap_options = {f"Giro {l.get('lap_number', '?')} ({l.get('lap_duration', 0)}s)": l for l in laps}
+            laps = sorted(laps, key=lambda x: x.get('lap_number', 0))
+            max_laps = len(laps)
+            
             with col2:
-                selected_lap_name = st.selectbox("⏱️ Giro", list(lap_options.keys()))
-                selected_lap = lap_options[selected_lap_name]
+                lap_num = st.slider("⏱️ Scorri i giri", min_value=1, max_value=max_laps, value=1)
+                
+                selected_lap = laps[lap_num - 1]
+                selected_lap_name = f"Giro {selected_lap.get('lap_number')} ({format_time(selected_lap.get('lap_duration'))})"
             
             st.subheader("Tempi per Settore")
             sec1, sec2, sec3 = st.columns(3)
-            sec1.metric("Settore 1", f"{selected_lap.get('duration_sector_1', 'N/A')} s")
-            sec2.metric("Settore 2", f"{selected_lap.get('duration_sector_2', 'N/A')} s")
-            sec3.metric("Settore 3", f"{selected_lap.get('duration_sector_3', 'N/A')} s")
+            
+            # Applichiamo la formattazione F1 ai settori
+            sec1.metric("Settore 1", f"{format_time(selected_lap.get('duration_sector_1'))} s")
+            sec2.metric("Settore 2", f"{format_time(selected_lap.get('duration_sector_2'))} s")
+            sec3.metric("Settore 3", f"{format_time(selected_lap.get('duration_sector_3'))} s")
             
             data = get_telemetry_full(driver_num, curr_session_key)
-            if data:
-                df = pd.DataFrame(data)
-                df['date'] = pd.to_datetime(df['date'], format='ISO8601', utc=True)
-                start_time = pd.to_datetime(selected_lap['date_start'], format='ISO8601', utc=True)
-                end_time = start_time + pd.Timedelta(seconds=selected_lap['lap_duration'])
+            
+            # --- CREIAMO LE DUE COLONNE PER I GRAFICI AFFIANCATI ---
+            chart_col1, chart_col2 = st.columns(2)
+            
+            # GRAFICO 1: VELOCITÀ DEL GIRO (A SINISTRA)
+            with chart_col1:
+                if data:
+                    df = pd.DataFrame(data)
+                    df['date'] = pd.to_datetime(df['date'], format='ISO8601', utc=True)
+                    start_time = pd.to_datetime(selected_lap['date_start'], format='ISO8601', utc=True)
+                    end_time = start_time + pd.Timedelta(seconds=selected_lap['lap_duration'])
+                    
+                    df_lap = df[(df['date'] >= start_time) & (df['date'] <= end_time)].copy()
+                    
+                    if not df_lap.empty:
+                        df_lap['speed'] = pd.to_numeric(df_lap['speed'], errors='coerce')
+                        df_lap['elapsed'] = (df_lap['date'] - start_time).dt.total_seconds()
+                        
+                        st.subheader(f"Velocità: {selected_lap_name}")
+                        
+                        line_chart = alt.Chart(df_lap).mark_line(color='#3498db').encode(
+                            x=alt.X('elapsed:Q', title='Tempo del Giro (s)'),
+                            y=alt.Y('speed:Q', title='Velocità (km/h)'),
+                            tooltip=['elapsed', 'speed']
+                        )
+                        
+                        s1_time = selected_lap.get('duration_sector_1') or 0
+                        s2_time = s1_time + (selected_lap.get('duration_sector_2') or 0)
+                        
+                        sectors_df = pd.DataFrame({'elapsed': [s1_time, s2_time]})
+                        rules = alt.Chart(sectors_df).mark_rule(color='#e74c3c', strokeDash=[5, 5]).encode(x='elapsed:Q')
+                        
+                        st.altair_chart(line_chart + rules, width="stretch") 
+                    else:
+                        st.warning("Dati telemetrici mancanti per questo giro.")
+            
+            # GRAFICO 2: ANDAMENTO GOMME / PASSO GARA (A DESTRA)
+            with chart_col2:
+                st.subheader("Degrado Gomme (Passo Gara)")
+                stints_data = get_stints(curr_session_key)
                 
-                df_lap = df[(df['date'] >= start_time) & (df['date'] <= end_time)].copy()
-                
-                if not df_lap.empty:
-                    df_lap['speed'] = pd.to_numeric(df_lap['speed'], errors='coerce')
-                    df_lap['elapsed'] = (df_lap['date'] - start_time).dt.total_seconds()
+                if stints_data and laps:
+                    df_laps = pd.DataFrame(laps)
+                    # Filtriamo gli stint solo per il pilota selezionato
+                    df_stints = pd.DataFrame([s for s in stints_data if s.get('driver_number') == driver_num])
                     
-                    st.subheader(f"Velocità: {selected_name} - {selected_lap_name}")
-                    
-                    line_chart = alt.Chart(df_lap).mark_line(color='#3498db').encode(
-                        x=alt.X('elapsed:Q', title='Tempo del Giro (s)'),
-                        y=alt.Y('speed:Q', title='Velocità (km/h)'),
-                        tooltip=['elapsed', 'speed']
-                    )
-                    
-                    s1_time = selected_lap.get('duration_sector_1') or 0
-                    s2_time = s1_time + (selected_lap.get('duration_sector_2') or 0)
-                    
-                    sectors_df = pd.DataFrame({'elapsed': [s1_time, s2_time]})
-                    rules = alt.Chart(sectors_df).mark_rule(color='#e74c3c', strokeDash=[5, 5]).encode(x='elapsed:Q')
-                    
-                    st.altair_chart(line_chart + rules, width="stretch")
+                    if not df_stints.empty:
+                        # INCROCIO DATI ROBUSTO: Assegniamo la mescola guardando i giri di inizio e fine
+                        def get_compound(lap_num):
+                            for _, stint in df_stints.iterrows():
+                                if stint.get('lap_start', 0) <= lap_num <= stint.get('lap_end', 999):
+                                    return stint.get('compound', 'UNKNOWN')
+                            return 'UNKNOWN'
+                            
+                        # Applichiamo la funzione a tutti i giri
+                        df_laps['compound'] = df_laps['lap_number'].apply(get_compound)
+                        
+                        # Filtro di pulizia: teniamo solo i giri veloci (entro il 115% del giro più veloce)
+                        min_lap = df_laps['lap_duration'].min()
+                        df_laps_filtered = df_laps[df_laps['lap_duration'] <= min_lap * 1.15].dropna(subset=['lap_duration'])
+                        
+                        # Colori ufficiali Pirelli
+                        color_scale = alt.Scale(
+                            domain=['SOFT', 'MEDIUM', 'HARD', 'INTERMEDIATE', 'WET', 'UNKNOWN'],
+                            range=['#e74c3c', '#f1c40f', '#ecf0f1', '#2ecc71', '#3498db', '#95a5a6']
+                        )
+                        
+                        # Disegniamo i punti dei giri
+                        pace_chart = alt.Chart(df_laps_filtered).mark_circle(size=60, opacity=0.8).encode(
+                            x=alt.X('lap_number:Q', title='Numero Giro', scale=alt.Scale(zero=False)),
+                            y=alt.Y('lap_duration:Q', title='Tempo (s)', scale=alt.Scale(zero=False)),
+                            color=alt.Color('compound:N', scale=color_scale, legend=alt.Legend(title="Mescola", orient="bottom", columns=3, labelLimit=0)),
+                            tooltip=['lap_number', 'lap_duration', 'compound']
+                        ).properties(height=350)
+                        
+                        # Disegniamo la linea di tendenza del degrado
+                        trend = pace_chart.transform_regression('lap_number', 'lap_duration', groupby=['compound']).mark_line(size=3)
+                        
+                        st.altair_chart(pace_chart + trend, width='stretch')
+                    else:
+                        st.info("Dati mescole non ancora disponibili per l'analisi.")
                 else:
-                    st.warning("Dati telemetrici mancanti per questo giro.")
+                    st.info("Gara non avviata o dati mancanti.")
         else:
             st.info("Nessun giro valido trovato.")
     else:
@@ -583,45 +710,74 @@ elif page == "🎙️ Radio Box":
 elif page == "💬 Chiacchera col muretto":
     st.header("🤖 Ingegnere di PistAI")
     
-    # 1. RACCOLTA DATI PER IL CONTESTO
-    drivers_dict = get_drivers(curr_session_key)
-    _, live_grid = get_openf1_race_status(curr_session_key)
-    recent_msgs = get_race_msgs(curr_session_key)
-    weather = get_weather(curr_session_key)
+    # 1. INTERRUTTORE DI VELOCITÀ / CONTESTO
+    st.markdown("💡 *Spegni il collegamento telemetrico per chat fulminee e generali sulla F1.*")
+    use_live_data = st.toggle("📡 Analizza i dati live di questa gara (Richiede qualche secondo)", value=False)
     
-    # Sintesi Classifica (Fixed KeyError)
-    live_standings = "Dati posizioni non disponibili."
-    if drivers_dict and live_grid:
-        sorted_indices = sorted(drivers_dict.values(), key=lambda d: live_grid.get(d['number'], 99))
-        live_standings = ", ".join([f"{live_grid.get(d['number'])}° {d['full_name']}" for d in sorted_indices[:5]])
-        
-    # Sintesi Meteo
-    weather_info = "Dati meteo non disponibili."
-    if weather:
-        weather_info = f"Aria {weather.get('air_temperature')}°C, Pista {weather.get('track_temperature')}°C, Umidità {weather.get('humidity')}%."
+    context = ""
+    if use_live_data:
+        with st.spinner("Scaricamento telemetria in corso..."):
+            drivers_dict = get_drivers(curr_session_key)
+            _, live_grid = get_openf1_race_status(curr_session_key)
+            recent_msgs = get_race_msgs(curr_session_key)
+            weather = get_weather(curr_session_key)
+            
+            live_standings = "Dati posizioni non disponibili."
+            if drivers_dict and live_grid:
+                sorted_indices = sorted(drivers_dict.values(), key=lambda d: live_grid.get(d['number'], 99))
+                live_standings = ", ".join([f"{live_grid.get(d['number'])}° {d['full_name']}" for d in sorted_indices[:5]])
+                
+            weather_info = "Dati meteo non disponibili."
+            if weather:
+                weather_info = f"Aria {weather.get('air_temperature')}°C, Pista {weather.get('track_temperature')}°C, Umidità {weather.get('humidity')}%."
 
-    # Sintesi Direzione Gara
-    race_control = " | ".join([m.get('message', '') for m in recent_msgs[-3:]]) if recent_msgs else "Nessuna anomalia."
-    
-    # Context per Gemini
-    context = f"SITUAZIONE {session_name}: Classifica Top 5: {live_standings}. Meteo: {weather_info}. Eventi pista: {race_control}."
+            race_control = " | ".join([m.get('message', '') for m in recent_msgs[-3:]]) if recent_msgs else "Nessuna anomalia."
+            
+            # Pacchetto segreto da passare a Gemini
+            context = f"[DATI DI GARA ATTUALI: {session_name} | Top 5: {live_standings} | Meteo: {weather_info} | Direzione Gara: {race_control}]"
 
+    # 2. GESTIONE DELLA MEMORIA CHAT
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
+    # Disegna a schermo i messaggi vecchi
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
+    # 3. INVIO DEL NUOVO MESSAGGIO
     if prompt := st.chat_input("Inge, analizza la situazione..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"): st.markdown(prompt)
 
         with st.chat_message("assistant"):
             if GEMINI_API_KEY:
-                full_query = f"{context}\n\nDOMANDA: {prompt}"
-                response = model.generate_content(full_query)
-                st.markdown(response.text)
-                st.session_state.messages.append({"role": "assistant", "content": response.text})
+                # Recupero della memoria
+                history = []
+                for m in st.session_state.messages[:-1]: 
+                    role = "user" if m["role"] == "user" else "model"
+                    history.append({"role": role, "parts": [m["content"]]})
+                
+                chat = model.start_chat(history=history)
+                
+                # 2. Iniezione forzata della linea temporale
+                anno_attuale = datetime.now().year
+                
+                if use_live_data:
+                    full_prompt = f"[CONTESTO TEMPORALE: Oggi siamo nel {anno_attuale}. L'utente ha selezionato l'evento '{session_name}' della stagione {selected_year}. DATI TELEMETRICI LIVE IN CORSO:]\n{context}\n\nDOMANDA: {prompt}"
+                else:
+                    full_prompt = f"[CONTESTO TEMPORALE: Oggi siamo nel {anno_attuale}. L'utente sta analizzando l'evento '{session_name}' della stagione {selected_year}. COLLEGAMENTO TELEMETRICO SPENTO. Rispondi usando la tua conoscenza storica. Se ti chiedono dettagli su gare recenti del {selected_year} o {anno_attuale} che non fanno parte del tuo database di addestramento, sii onesto, non inventare risultati e chiedi all'utente di accendere l'interruttore dei dati live per analizzare la telemetria di questa sessione.]\n\nDOMANDA: {prompt}"
+                
+                # 3. Invio del messaggio in streaming
+                response = chat.send_message(full_prompt, stream=True)
+                
+                def stream_chunks():
+                    for chunk in response:
+                        if chunk.text:
+                            yield chunk.text
+                
+                full_text = st.write_stream(stream_chunks())
+                st.session_state.messages.append({"role": "assistant", "content": full_text})
+                
             else:
                 st.error("Inserisci la Gemini API Key!")

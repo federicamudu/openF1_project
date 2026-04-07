@@ -4,3 +4,4 @@ requests
 altair
 google-generativeai
 python-dotenv
+streamlit-autorefresh

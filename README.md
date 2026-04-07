@@ -8,12 +8,12 @@ Il progetto unisce la telemetria in tempo reale dei transponder ufficiali (trami
 
 Il menu laterale offre l'accesso a 6 sistemi principali:
 
-* **📡 Dashboard Live:** Panoramica in tempo reale dell'evento. Include un widget meteo dinamico (Temperatura Aria/Pista, Umidità, Pioggia), la griglia di partenza e le posizioni live in pista (o di arrivo a gara conclusa). *Nota: Riconosce in automatico le gare annullate (es. Bahrain e Arabia Saudita 2026).*
-* **📈 Telemetria:** Analisi approfondita dei giri. Mostra i tempi dei singoli settori e genera grafici interattivi della velocità (km/h) sovrapposta al tempo del giro.
+* **📡 Dashboard Live:** Panoramica in tempo reale dell'evento. Include un widget meteo dinamico, la griglia di partenza, le posizioni live in pista e una **Timeline Strategica (Gantt)** che mostra l'utilizzo delle mescole per ogni pilota. La pagina è dotata di *Auto-Refresh* (si aggiorna da sola ogni 30 secondi durante le gare in corso).
+* **📈 Telemetria:** Analisi approfondita dei giri. Mostra i tempi dei singoli settori (formato F1) e affianca la velocità (km/h) del singolo giro all'**Analisi del Degrado Gomme**, tracciando una linea di tendenza del passo gara in base alla mescola utilizzata.
 * **🏆 Classifiche:** Visualizza i punti del singolo round e il Campionato Mondiale Piloti. Se i dati ufficiali FIA non sono ancora disponibili per la gara in corso, il sistema genera una **proiezione live** calcolando i punti stimati in base alle posizioni attuali in pista.
 * **🗺️ Mappa Circuito:** Disegna la mappa del tracciato estrapolando e unendo le coordinate spaziali satellitari (X, Y) dei transponder delle monoposto durante un giro lanciato.
 * **🎙️ Radio Box:** Ascolta i team radio dei piloti (in formato "Best of TV" o per singolo pilota) e leggi in tempo reale i messaggi ufficiali della Direzione Gara (Bandiere Gialle, Safety Car, Investigazioni, Penalità).
-* **💬 Chiacchera col muretto (Ingegnere di PistAI):** Un vero assistente AI conversazionale basato su Google Gemini. L'AI legge "di nascosto" i dati live (meteo, top 5 attuale, messaggi della direzione gara) per rispondere istantaneamente a domande tattiche e di strategia, simulando le comunicazioni radio del team.
+* **💬 Chiacchera col muretto (Ingegnere di PistAI):** Un vero assistente AI conversazionale basato su Google Gemini. L'AI legge "di nascosto" i dati live per rispondere a domande tattiche simulando le comunicazioni radio. È dotato di memoria storica della chat, risposte in tempo reale (Streaming) e un *Toggle* manuale per passare dall'analisi della gara in corso a discussioni sulla storia generale della F1.
 
 ## 🎛️ Pannello di Controllo (Menu Laterale)
 
@@ -74,6 +74,6 @@ Il progetto è ottimizzato per il tema chiaro/scuro di sistema ed è pronto per 
 
 
 ## ⚠️ Avvertenze sui Dati e sull'App
-* **Ritardo Radio:** I file audio dei Team Radio non sono istantanei; OpenF1 li recupera dai feed della regia internazionale, pertanto possono subire ritardi fisiologici (2-5 minuti) o non essere presenti per tutti i piloti in ogni sessione.
+* **Ritardo Radio & Gomme**: I file audio dei Team Radio e i dati degli Stints (mescole) non sono sempre istantanei. Vengono elaborati dai server della FOM/Pirelli e possono subire ritardi o essere consolidati a fine sessione.
 * **Gare Annullate:** L'app include blocchi e avvisi personalizzati inseriti a codice per gestire specifici Gran Premi cancellati dal calendario (come Bahrain e Arabia Saudita nel 2026), evitando chiamate a vuoto verso i database.
-* **Tempi di Risposta AI:** La chat con l'Ingegnere di Pista potrebbe richiedere qualche secondo di attesa per generare l'output. Questo accade perché, prima di processare la risposta, il sistema interroga silenziosamente le API per raccogliere il contesto aggiornato (classifica, meteo e messaggi direzione gara) da fornire al modello.
+* **Tempi di Risposta AI:** La chat con l'Ingegnere di Pista potrebbe richiedere qualche secondo di attesa per generare l'output. L'AI utilizza l'anno solare corrente per orientarsi. Se le vengono poste domande su strategie di una gara, si baserà sui dati passati dalla Dashboard, evitando allucinazioni (es. invenzioni su distacchi o usura gomme).
