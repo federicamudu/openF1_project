@@ -1,5 +1,7 @@
 # 🏎️ F1 Mission Control
 
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://openf1project-wqq6yelymrhtjphcb7zhez.streamlit.app/)
+
 Benvenuto al muretto box! **F1 Mission Control** è una web app interattiva costruita in Python e Streamlit che trasforma i dati della Formula 1 in un vero e proprio hub strategico. 
 
 Il progetto unisce la telemetria in tempo reale dei transponder ufficiali (tramite l'API di OpenF1), i dati storici e le classifiche mondiali (tramite Jolpica/Ergast) e l'intelligenza artificiale generativa (Google Gemini) per offrirti l'esperienza definitiva da Ingegnere di Pista.
