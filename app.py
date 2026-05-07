@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 import os
 import pandas as pd
 import altair as alt
@@ -15,41 +16,46 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 st.set_page_config(page_title="F1 Mission Control", page_icon="🏎️", layout="wide", initial_sidebar_state="collapsed")
 
 if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel(
-        model_name='gemini-3-flash-preview',
-        system_instruction="Sei il Capo degli Ingegneri al muretto box di F1. Il tuo compito è analizzare la situazione in gara e rispondere al pilota o al Team Principal in modo tecnico, freddo e iper-realistico, usando il tipico gergo radiofonico (es. 'Copy', 'Box', 'Delta', 'Strat mode'). Argomenta le tue risposte creando discorsi fluidi e brevi paragrafi. È ASSOLUTAMENTE VIETATO USARE ELENCHI PUNTATI O NUMERATI. Sei sotto pressione: vai dritto al punto basandoti SOLO ED ESCLUSIVAMENTE sui dati live che ti vengono forniti nel contesto. Se ti vengono chiesti gap millimetrici o lo stato di usura delle gomme, e questi dati non sono presenti nel tuo contesto, NON INVENTARLI: comunica in modo realistico che sei in attesa di conferma dai sensori o dal server della telemetria. Sii conciso, spietato nell'analisi logica e fornisci sempre una raccomandazione chiara quando ti viene chiesta una strategia."
-    )
+    if GEMINI_API_KEY:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        sys_instruct="Sei il Capo degli Ingegneri al muretto box di F1. Il tuo compito è analizzare la situazione in gara e rispondere al pilota o al Team Principal in modo tecnico, freddo e iper-realistico, usando il tipico gergo radiofonico (es. 'Copy', 'Box', 'Delta', 'Strat mode'). Argomenta le tue risposte creando discorsi fluidi e brevi paragrafi. È ASSOLUTAMENTE VIETATO USARE ELENCHI PUNTATI O NUMERATI. Sei sotto pressione: vai dritto al punto basandoti SOLO ED ESCLUSIVAMENTE sui dati live che ti vengono forniti nel contesto. Se ti vengono chiesti gap millimetrici o lo stato di usura delle gomme, e questi dati non sono presenti nel tuo contesto, NON INVENTARLI: comunica in modo realistico che sei in attesa di conferma dai sensori o dal server della telemetria. Sii conciso, spietato nell'analisi logica e fornisci sempre una raccomandazione chiara quando ti viene chiesta una strategia."
+    
 
 # --- FUNZIONI DATI (OpenF1 & Jolpica/Ergast) ---
 
-@st.cache_data(ttl=3600)
 def get_sessions(year):
-    """Scarica le sessioni e le raggruppa per Gran Premio (Nazione)"""
+    """Scarica le sessioni e scarta quelle che si trovano nel futuro!"""
     try:
         url = f"https://api.openf1.org/v1/sessions?year={year}"
         res = requests.get(url, timeout=5).json()
         
-        # SCUDO: Se l'API va offline o dà errore testuale, restituisci un fallback
         if not isinstance(res, list):
             return {"Offline - Riprova": {"Latest": "latest"}}
 
         meetings = {}
+        # Prendiamo l'ora esatta di adesso in formato UTC per confrontarla con la FIA
+        now = pd.Timestamp.utcnow() 
+        
         for s in res:
+            date_start_str = s.get('date_start')
+            
+            # FILTRO ANTI-FUTURO: Se la sessione non è ancora iniziata, la ignoriamo!
+            if date_start_str:
+                date_start = pd.to_datetime(date_start_str, format='ISO8601', utc=True)
+                if date_start > now:
+                    continue
+
             country = s.get('country_name', 'Sconosciuto')
             s_name = s.get('session_name', 'Sconosciuta')
             s_key = s.get('session_key', 'latest')
             
-            # Crea il "cassetto" della nazione se non esiste
             if country not in meetings:
                 meetings[country] = {}
                 
-            # Salva la sessione dentro la nazione
             meetings[country][s_name] = s_key
             
-        # Se la lista è completamente vuota
         if not meetings:
-            return {"Nessun GP trovato": {"Latest": "latest"}}
+            return {"Nessun GP trovato finora": {"Latest": "latest"}}
             
         return meetings
         
@@ -390,6 +396,9 @@ if page == "📡 Dashboard":
         df_stints['Pilota'] = df_stints['driver_number'].map(lambda x: num_to_name.get(x, str(x)))
         
         # Pulizia dati
+        df_stints['lap_start'] = pd.to_numeric(df_stints['lap_start'], errors='coerce')
+        df_stints['lap_end'] = pd.to_numeric(df_stints['lap_end'], errors='coerce')
+        
         df_stints = df_stints.dropna(subset=['lap_start', 'lap_end', 'compound'])
         
         if not df_stints.empty:
@@ -745,39 +754,50 @@ elif page == "💬 Chiacchera col muretto":
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    # 3. INVIO DEL NUOVO MESSAGGIO
     if prompt := st.chat_input("Inge, analizza la situazione..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"): st.markdown(prompt)
 
         with st.chat_message("assistant"):
             if GEMINI_API_KEY:
-                # Recupero della memoria
+                # 1. Recupero della memoria 
                 history = []
                 for m in st.session_state.messages[:-1]: 
                     role = "user" if m["role"] == "user" else "model"
-                    history.append({"role": role, "parts": [m["content"]]})
+                    history.append(types.Content(
+                        role=role, 
+                        parts=[types.Part(text=m["content"])]
+                    ))
                 
-                chat = model.start_chat(history=history)
-                
-                # 2. Iniezione forzata della linea temporale
+                # 2. Iniezione della linea temporale
                 anno_attuale = datetime.now().year
                 
                 if use_live_data:
                     full_prompt = f"[CONTESTO TEMPORALE: Oggi siamo nel {anno_attuale}. L'utente ha selezionato l'evento '{session_name}' della stagione {selected_year}. DATI TELEMETRICI LIVE IN CORSO:]\n{context}\n\nDOMANDA: {prompt}"
                 else:
-                    full_prompt = f"[CONTESTO TEMPORALE: Oggi siamo nel {anno_attuale}. L'utente sta analizzando l'evento '{session_name}' della stagione {selected_year}. COLLEGAMENTO TELEMETRICO SPENTO. Rispondi usando la tua conoscenza storica. Se ti chiedono dettagli su gare recenti del {selected_year} o {anno_attuale} che non fanno parte del tuo database di addestramento, sii onesto, non inventare risultati e chiedi all'utente di accendere l'interruttore dei dati live per analizzare la telemetria di questa sessione.]\n\nDOMANDA: {prompt}"
+                    full_prompt = f"[CONTESTO TEMPORALE: Oggi siamo nel {anno_attuale}. L'utente sta analizzando l'evento '{session_name}' della stagione {selected_year}. COLLEGAMENTO TELEMETRICO SPENTO. Rispondi usando la tua conoscenza storica...]\n\nDOMANDA: {prompt}"
                 
-                # 3. Invio del messaggio in streaming
-                response = chat.send_message(full_prompt, stream=True)
+                # 3. Invio del messaggio in streaming con il nuovo Client
+                try:
+                    response = client.models.generate_content_stream(
+                        model='gemini-2.0-flash', 
+                        contents=full_prompt,
+                        config=types.GenerateContentConfig(
+                            system_instruction=sys_instruct,
+                            history=history
+                        )
+                    )
+                    
+                    def stream_chunks():
+                        for chunk in response:
+                            if chunk.text:
+                                yield chunk.text
+                    
+                    full_text = st.write_stream(stream_chunks())
+                    st.session_state.messages.append({"role": "assistant", "content": full_text})
                 
-                def stream_chunks():
-                    for chunk in response:
-                        if chunk.text:
-                            yield chunk.text
-                
-                full_text = st.write_stream(stream_chunks())
-                st.session_state.messages.append({"role": "assistant", "content": full_text})
+                except Exception as e:
+                    st.error(f"Errore di connessione al muretto: {e}")
                 
             else:
                 st.error("Inserisci la Gemini API Key!")

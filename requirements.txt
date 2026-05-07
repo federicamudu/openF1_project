@@ -2,6 +2,6 @@ streamlit
 pandas
 requests
 altair
-google-generativeai
+google-genai
 python-dotenv
 streamlit-autorefresh
